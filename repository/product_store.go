@@ -1,64 +1,58 @@
 package repository
 
 import (
-	"encoding/json"
+	"database/sql"
 	"fmt"
-	"os"
-	"sync"
 
 	"github.com/HakanVardarr/go-ecommerce-api/models"
 )
 
 type ProductStore struct {
-	mu       sync.RWMutex
-	products map[int]models.Product
-	lastId   int
+	db *sql.DB
 }
 
-func NewProductStore(filePath string) (*ProductStore, error) {
-	store := &ProductStore{
-		products: make(map[int]models.Product),
-		lastId:   0,
-	}
+func NewProductStore(db *sql.DB) *ProductStore {
+	return &ProductStore{db: db}
+}
 
-	fileData, err := os.ReadFile(filePath)
+func (s *ProductStore) CreateProduct(product *models.Product) error {
+	query := `INSERT INTO products (seller_id, name, price, stock) VALUES (?, ?, ?, ?);`
+
+	result, err := s.db.Exec(query, product.SellerID, product.Name, product.Price, product.Stock)
 	if err != nil {
-		return store, nil
+		return fmt.Errorf("failed to insert product: %w", err)
 	}
 
-	var initalProducts []models.Product
-	err = json.Unmarshal(fileData, &initalProducts)
+	id, err := result.LastInsertId()
+	if err == nil {
+		product.ID = int(id)
+	}
+
+	return nil
+}
+
+func (s *ProductStore) GetAllProducts() ([]models.Product, error) {
+	query := `SELECT id, seller_id, name, price, stock, created_at FROM products;`
+
+	rows, err := s.db.Query(query)
 	if err != nil {
-		return store, fmt.Errorf("Failed to unmarshal: %w", err)
+		return nil, fmt.Errorf("failed to query products: %w", err)
+	}
+	defer rows.Close()
+
+	products := make([]models.Product, 0)
+	for rows.Next() {
+		var p models.Product
+		err := rows.Scan(&p.ID, &p.SellerID, &p.Name, &p.Price, &p.Stock, &p.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan product row: %w", err)
+		}
+		products = append(products, p)
 	}
 
-	for _, p := range initalProducts {
-		store.lastId++
-		p.Id = store.lastId
-		store.products[p.Id] = p
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error during rows iteration: %w", err)
 	}
 
-	return store, nil
-}
-
-func (s *ProductStore) AddProduct(p models.Product) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.lastId++
-	p.Id = s.lastId
-	s.products[p.Id] = p
-
-	return p.Id
-}
-
-func (s *ProductStore) GetAllProduct() []models.Product {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	list := make([]models.Product, 0, len(s.products))
-	for _, p := range s.products {
-		list = append(list, p)
-	}
-	return list
+	return products, nil
 }
